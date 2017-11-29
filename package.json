@@ -28,5 +28,10 @@
   "bugs": {
     "url": "https://github.com/justmoon/ilp-compat-plugin/issues"
   },
-  "homepage": "https://github.com/justmoon/ilp-compat-plugin#readme"
+  "homepage": "https://github.com/justmoon/ilp-compat-plugin#readme",
+  "dependencies": {
+    "debug": "^3.1.0",
+    "ilp-packet": "^1.5.0",
+    "uuid": "^3.1.0"
+  }
 }
