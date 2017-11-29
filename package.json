@@ -1,0 +1,32 @@
+{
+  "name": "ilp-compat-plugin",
+  "version": "0.0.0",
+  "description": "Convert a Ledger Plugin Interface (LPI) version 1 plugin to LPIv2",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/justmoon/ilp-compat-plugin.git"
+  },
+  "keywords": [
+    "ilp",
+    "plugin",
+    "compat",
+    "compatibility",
+    "migrate",
+    "update",
+    "upgrade",
+    "convert",
+    "lpi1",
+    "lpi2",
+    "lpi"
+  ],
+  "author": "Interledger Team <info@interledger.org>",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/justmoon/ilp-compat-plugin/issues"
+  },
+  "homepage": "https://github.com/justmoon/ilp-compat-plugin#readme"
+}
