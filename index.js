@@ -1,11 +1,16 @@
 'use strict'
 
 const uuid = require('uuid/v4')
+const { EventEmitter } = require('events')
 const debug = require('debug')('ilp-compat-plugin')
 const IlpPacket = require('ilp-packet')
 const InterledgerRejectionError = require('./errors/InterledgerRejectionError')
 const TransferHandlerAlreadyRegisteredError = require('./errors/TransferHandlerAlreadyRegisteredError')
 const InvalidFieldsError = require('./errors/InvalidFieldsError')
+const {
+  parseIlpPayment,
+  parseIlpFulfillment,
+  serializeIlpFulfillment } = require('./util')
 
 const PASSTHROUGH_EVENTS = [
   'connect',
@@ -27,8 +32,10 @@ module.exports = (oldPlugin) => {
     return oldPlugin
   }
 
-  class Plugin {
+  class Plugin extends EventEmitter {
     constructor (oldPlugin) {
+      super()
+
       this.oldPlugin = oldPlugin
 
       this.transfers = {}
@@ -48,6 +55,7 @@ module.exports = (oldPlugin) => {
       this.oldPlugin.on('outgoing_fulfill', this._handleOutgoingFulfill.bind(this))
       this.oldPlugin.on('outgoing_reject', this._handleOutgoingReject.bind(this))
       this.oldPlugin.on('outgoing_cancel', this._handleOutgoingCancel.bind(this))
+      this.oldPlugin.on('incoming_transfer', this._handleIncomingTransfer.bind(this))
       this.oldPlugin.on('incoming_prepare', this._handleIncomingPrepare.bind(this))
     }
 
@@ -69,45 +77,33 @@ module.exports = (oldPlugin) => {
 
     async sendTransfer (transfer) {
       const id = uuid()
-
       const prefix = this.getInfo().prefix
-
-      let to
-      if (startsWith(prefix, transfer.destination)) {
-        // If the destination starts with the ledger prefix, we deliver to the
-        // local account as identified by the first segment after the prefix
-        to = prefix + transfer.destination.substring(prefix.length).split('.')[0]
-      } else {
-        // Otherwise, we deliver to the default connector
-        to = this.getInfo().connectors[0]
-      }
-
-      if (!to) {
-        throw new Error('No valid destination: no connector and destination is not local')
-      }
+      const to = this._getTo(transfer.destination)
 
       const ilp = IlpPacket.serializeIlpPayment({
         account: transfer.destination,
         // amount is always zero to trigger forwarding behavior
         amount: '0',
-        data: transfer.data.toString('base64')
+        data: (transfer.data && transfer.data.toString('base64')) || ''
       })
 
       const lpi1Transfer = {
         id,
-        amount: transfer.amount,
+        from: this.oldPlugin.getAccount(),
         to,
         ledger: prefix,
+        amount: transfer.amount,
         ilp,
-        executionCondition: transfer.condition,
-        expiresAt: transfer.expiry,
-        custom: transfer.custom
+        executionCondition: transfer.executionCondition,
+        expiresAt: transfer.expiresAt,
+        custom: transfer.custom || {}
       }
 
       return new Promise((resolve, reject) => {
         this.transfers[id] = { resolve, reject }
 
-        transfer.sendTransfer(lpi1Transfer)
+        console.log(lpi1Transfer)
+        this.oldPlugin.sendTransfer(lpi1Transfer)
           .catch(reject)
       })
     }
@@ -137,7 +133,14 @@ module.exports = (oldPlugin) => {
      * @return {Promise<Message>} Response message
      */
     sendRequest (request) {
-      return this.oldPlugin.sendRequest(request)
+      const ledger = this.getInfo().prefix
+      const to = this._getTo()
+
+      return this.oldPlugin.sendRequest(Object.assign({
+        ledger,
+        from: this.oldPlugin.getAccount(),
+        to
+      }, request))
     }
 
     registerRequestHandler (handler) {
@@ -146,6 +149,26 @@ module.exports = (oldPlugin) => {
 
     deregisterRequestHandler () {
       return this.oldPlugin.deregisterRequestHandler()
+    }
+
+    _getTo (destination) {
+      const prefix = this.getInfo().prefix
+
+      let to
+      if (destination && startsWith(prefix, destination)) {
+        // If the destination starts with the ledger prefix, we deliver to the
+        // local account as identified by the first segment after the prefix
+        to = prefix + destination.substring(prefix.length).split('.')[0]
+      } else {
+        // Otherwise, we deliver to the default connector
+        to = this.getInfo().connectors[0]
+      }
+
+      if (!to) {
+        throw new Error('No valid destination: no connector and destination is not local')
+      }
+
+      return to
     }
 
     _handleOutgoingFulfill (transfer, fulfillment, ilp) {
@@ -157,7 +180,7 @@ module.exports = (oldPlugin) => {
 
       const { resolve } = this.transfers[transfer.id]
 
-      const { data } = IlpPacket.deserializeIlpFulfillment(ilp)
+      const { data } = parseIlpFulfillment(ilp)
       resolve({
         fulfillment,
         data: Buffer.from(data, 'base64')
@@ -173,7 +196,15 @@ module.exports = (oldPlugin) => {
 
       const { reject } = this.transfers[transfer.id]
 
-      reject(reason)
+      reject(new InterledgerRejectionError({
+        code: reason.code,
+        name: reason.name,
+        message: reason.message,
+        triggeredBy: reason.triggered_by,
+        triggeredAt: reason.triggered_at,
+        forwardedBy: reason.forwarded_by,
+        additionalInfo: reason.additional_info
+      }))
     }
 
     _handleOutgoingCancel (transfer, reason) {
@@ -185,20 +216,38 @@ module.exports = (oldPlugin) => {
 
       const { reject } = this.transfers[transfer.id]
 
-      reject(reason)
+      reject(new InterledgerRejectionError({
+        code: reason.code,
+        name: reason.name,
+        message: reason.message,
+        triggeredBy: reason.triggered_by,
+        triggeredAt: reason.triggered_at,
+        forwardedBy: reason.forwarded_by,
+        additionalInfo: reason.additional_info
+      }))
+    }
+
+    _handleIncomingTransfer (lpi1Transfer) {
+      // TODO Handle incoming optimistic transfers
+      console.warn('ilp-compat-plugin: Optimistic transfers not yet implemented')
     }
 
     _handleIncomingPrepare (lpi1Transfer) {
-      const { account, data } = IlpPacket.deserializeIlpPayment(Buffer.from(lpi1Transfer.ilp, 'base64'))
+      const { account, data, amount: ilpAmount } = parseIlpPayment(lpi1Transfer.ilp)
       debug(`incoming prepared transfer ${lpi1Transfer.id}`)
 
       const transfer = {
         amount: lpi1Transfer.amount,
         destination: account,
-        data: Buffer.from(data, 'base64'),
-        condition: lpi1Transfer.executionCondition,
-        expiry: lpi1Transfer.expiresAt,
-        custom: lpi1Transfer.custom
+        data: Buffer.from(data || '', 'base64'),
+        executionCondition: lpi1Transfer.executionCondition,
+        expiresAt: lpi1Transfer.expiresAt,
+        custom: lpi1Transfer.custom || {}
+      }
+
+      // Support legacy ILP amounts for now
+      if (ilpAmount !== '0') {
+        transfer.custom.legacyIlpAmount = ilpAmount
       }
 
       ;(async () => {
@@ -213,9 +262,7 @@ module.exports = (oldPlugin) => {
 
         const { fulfillment, data } = await this._transferHandler(transfer)
 
-        const ilp = IlpPacket.serializeIlpFulfillment({
-          data: data.toString('base64')
-        })
+        const ilp = serializeIlpFulfillment({ data: data || Buffer.alloc(0) })
 
         this.oldPlugin.fulfillCondition(lpi1Transfer.id, fulfillment, ilp)
       })()
@@ -223,9 +270,32 @@ module.exports = (oldPlugin) => {
           const errInfo = (typeof err === 'object' && err.stack) ? err.stack : err
           debug(`could not process incoming transfer ${lpi1Transfer.id}: ${errInfo}`)
 
-          this.oldPlugin.rejectIncomingTransfer(lpi1Transfer, {
-
-          })
+          if (err.name === 'InterledgerRejectionError') {
+            const {
+              code,
+              name,
+              message,
+              triggeredBy,
+              triggeredAt,
+              forwardedBy,
+              additionalInfo
+            } = err.ilpRejection
+            this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, {
+              code,
+              name,
+              message,
+              triggered_by: triggeredBy,
+              triggered_at: triggeredAt,
+              forwarded_by: forwardedBy,
+              additional_info: additionalInfo
+            })
+          } else {
+            this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, {
+              code: 'F00',
+              name: 'Bad Request',
+              message: err.message
+            })
+          }
         })
     }
   }

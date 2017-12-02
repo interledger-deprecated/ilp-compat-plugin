@@ -29,15 +29,19 @@ const CODE_NAMES = {
 
 class InterledgerRejectionError extends BaseError {
   constructor (opts) {
-    super(opts.message)
+    const message = opts.message || 'Unknown error'
+    super(message)
 
-    this.code = opts.code || 'F00'
-    this.name = opts.name || CODE_NAMES[this.code] || 'Unknown'
-    this.message = opts.message || 'Unknown Error'
-    this.triggeredBy = opts.triggeredBy || ''
-    this.forwardedBy = opts.forwardedBy || []
-    this.triggeredAt = opts.triggeredAt || new Date()
-    this.data = opts.data || JSON.stringify({ message: this.message || '' })
+    const code = opts.code || 'F00'
+    this.ilpRejection = {
+      code,
+      name: opts.name || CODE_NAMES[code] || 'Unknown',
+      message,
+      triggeredBy: opts.triggeredBy || '',
+      forwardedBy: opts.forwardedBy || [],
+      triggeredAt: opts.triggeredAt || new Date(),
+      additionalInfo: opts.additionalInfo || { message }
+    }
   }
 }
 
