@@ -80,10 +80,8 @@ module.exports = (oldPlugin) => {
       const prefix = this.getInfo().prefix
       const to = this._getTo(transfer.destination)
 
-      const ilp = IlpPacket.serializeIlpPayment({
+      const ilp = IlpPacket.serializeIlpForwardedPayment({
         account: transfer.destination,
-        // amount is always zero to trigger forwarding behavior
-        amount: '0',
         data: (transfer.data && transfer.data.toString('base64')) || ''
       })
 
