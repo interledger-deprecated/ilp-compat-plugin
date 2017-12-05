@@ -6,7 +6,7 @@ const InterledgerRejectionError = require('./errors/InterledgerRejectionError')
 
 exports.parseIlpPayment = (packet) => {
   try {
-    return IlpPacket.deserializeIlpPayment(Buffer.from(packet, 'base64'))
+    return IlpPacket.deserializeIlpForwardedPayment(Buffer.from(packet, 'base64'))
   } catch (err) {
     debug('error parsing ILP packet: ' + packet)
     throw new InterledgerRejectionError({
