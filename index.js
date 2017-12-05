@@ -302,7 +302,7 @@ module.exports = (oldPlugin) => {
               message,
               triggered_by: triggeredBy,
               triggered_at: triggeredAt,
-              forwarded_by: (Array.isArray(forwardedBy) && forwardedBy[0]) || '',
+              forwarded_by: (Array.isArray(forwardedBy) && forwardedBy[0]) || this.oldPlugin.getAccount(),
               additional_info: additionalInfo
             })
           } else {
