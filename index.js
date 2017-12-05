@@ -196,13 +196,21 @@ module.exports = (oldPlugin) => {
 
       const { reject } = this.transfers[transfer.id]
 
+      let forwardedBy
+      if (Array.isArray(reason.forwarded_by)) {
+        forwardedBy = reason.forwarded_by
+      } else if (typeof reason.forwarded_by === 'string') {
+        forwardedBy = [reason.forwarded_by]
+      } else {
+        forwardedBy = []
+      }
       reject(new InterledgerRejectionError({
         code: reason.code,
         name: reason.name,
         message: reason.message,
         triggeredBy: reason.triggered_by,
         triggeredAt: reason.triggered_at,
-        forwardedBy: reason.forwarded_by,
+        forwardedBy,
         additionalInfo: reason.additional_info
       }))
     }
@@ -216,13 +224,21 @@ module.exports = (oldPlugin) => {
 
       const { reject } = this.transfers[transfer.id]
 
+      let forwardedBy
+      if (Array.isArray(reason.forwarded_by)) {
+        forwardedBy = reason.forwarded_by
+      } else if (typeof reason.forwarded_by === 'string') {
+        forwardedBy = [reason.forwarded_by]
+      } else {
+        forwardedBy = []
+      }
       reject(new InterledgerRejectionError({
         code: reason.code,
         name: reason.name,
         message: reason.message,
         triggeredBy: reason.triggered_by,
         triggeredAt: reason.triggered_at,
-        forwardedBy: reason.forwarded_by,
+        forwardedBy,
         additionalInfo: reason.additional_info
       }))
     }
@@ -286,14 +302,17 @@ module.exports = (oldPlugin) => {
               message,
               triggered_by: triggeredBy,
               triggered_at: triggeredAt,
-              forwarded_by: forwardedBy,
+              forwarded_by: (Array.isArray(forwardedBy) && forwardedBy[0]) || '',
               additional_info: additionalInfo
             })
           } else {
             this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, {
               code: 'F00',
               name: 'Bad Request',
-              message: err.message
+              message: err.message,
+              triggered_by: '',
+              triggered_at: new Date(),
+              forwarded_by: ''
             })
           }
         })
