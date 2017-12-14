@@ -3,14 +3,14 @@
 const uuid = require('uuid/v4')
 const { EventEmitter } = require('events')
 const debug = require('debug')('ilp-compat-plugin')
-const IlpPacket = require('ilp-packet')
 const InterledgerRejectionError = require('./errors/InterledgerRejectionError')
 const TransferHandlerAlreadyRegisteredError = require('./errors/TransferHandlerAlreadyRegisteredError')
 const InvalidFieldsError = require('./errors/InvalidFieldsError')
+const IlpPacket = require('ilp-packet')
 const {
-  parseIlpPayment,
-  parseIlpFulfillment,
-  serializeIlpFulfillment } = require('./util')
+  parseIlpRejection,
+  serializeIlpRejection
+} = require('./util')
 
 const PASSTHROUGH_EVENTS = [
   'connect',
@@ -28,7 +28,7 @@ module.exports = (oldPlugin) => {
     throw new TypeError('not a plugin: no sendTransfer method')
   }
 
-  if (oldPlugin.constructor.lpiVersion === 2) {
+  if (oldPlugin.constructor.version === 2) {
     return oldPlugin
   }
 
@@ -76,14 +76,14 @@ module.exports = (oldPlugin) => {
     }
 
     async sendTransfer (transfer) {
+      if (typeof transfer.ilp === 'string') {
+        throw new TypeError('ILP packet was passed as a string, should be Buffer')
+      }
+
       const id = uuid()
       const prefix = this.getInfo().prefix
-      const to = this._getTo(transfer.destination)
-
-      const ilp = IlpPacket.serializeIlpForwardedPayment({
-        account: transfer.destination,
-        data: (transfer.data && transfer.data.toString('base64')) || ''
-      })
+      console.log('transfer.ilp', transfer.ilp)
+      const to = this._getTo(IlpPacket.deserializeIlpPacket(transfer.ilp).data.account)
 
       const lpi1Transfer = {
         id,
@@ -91,7 +91,7 @@ module.exports = (oldPlugin) => {
         to,
         ledger: prefix,
         amount: transfer.amount,
-        ilp,
+        ilp: transfer.ilp.toString('base64'),
         executionCondition: transfer.executionCondition,
         expiresAt: transfer.expiresAt,
         custom: transfer.custom || {}
@@ -163,7 +163,7 @@ module.exports = (oldPlugin) => {
       }
 
       if (!to) {
-        throw new Error('No valid destination: no connector and destination is not local')
+        throw new Error('No valid destination: no connector and destination is not local. destination=' + destination + ' prefix=' + prefix)
       }
 
       return to
@@ -176,12 +176,12 @@ module.exports = (oldPlugin) => {
       }
       debug(`fulfillment for transfer ${transfer.id}`)
 
+      console.log('ilp', ilp)
       const { resolve } = this.transfers[transfer.id]
 
-      const { data } = parseIlpFulfillment(ilp)
       resolve({
         fulfillment,
-        data: Buffer.from(data, 'base64')
+        ilp: Buffer.from(ilp || '', 'base64')
       })
     }
 
@@ -203,14 +203,8 @@ module.exports = (oldPlugin) => {
         forwardedBy = []
       }
       reject(new InterledgerRejectionError({
-        code: reason.code,
-        name: reason.name,
         message: reason.message,
-        triggeredBy: reason.triggered_by,
-        triggeredAt: reason.triggered_at,
-        forwardedBy,
-        additionalInfo: reason.additional_info
-      }))
+        ilpRejection: serializeIlpRejection(reason)
     }
 
     _handleOutgoingCancel (transfer, reason) {
@@ -247,21 +241,14 @@ module.exports = (oldPlugin) => {
     }
 
     _handleIncomingPrepare (lpi1Transfer) {
-      const { account, data, amount: ilpAmount } = parseIlpPayment(lpi1Transfer.ilp)
       debug(`incoming prepared transfer ${lpi1Transfer.id}`)
 
       const transfer = {
         amount: lpi1Transfer.amount,
-        destination: account,
-        data: Buffer.from(data || '', 'base64'),
+        ilp: Buffer.from(lpi1Transfer.ilp || '', 'base64'),
         executionCondition: lpi1Transfer.executionCondition,
         expiresAt: lpi1Transfer.expiresAt,
         custom: lpi1Transfer.custom || {}
-      }
-
-      // Support legacy ILP amounts for now
-      if (ilpAmount !== '0') {
-        transfer.custom.legacyIlpAmount = ilpAmount
       }
 
       ;(async () => {
@@ -274,9 +261,7 @@ module.exports = (oldPlugin) => {
           })
         }
 
-        const { fulfillment, data } = await this._transferHandler(transfer)
-
-        const ilp = serializeIlpFulfillment({ data: data || Buffer.alloc(0) })
+        const { fulfillment, ilp } = await this._transferHandler(transfer)
 
         this.oldPlugin.fulfillCondition(lpi1Transfer.id, fulfillment, ilp)
       })()
@@ -285,24 +270,7 @@ module.exports = (oldPlugin) => {
           debug(`could not process incoming transfer ${lpi1Transfer.id}: ${errInfo}`)
 
           if (err.name === 'InterledgerRejectionError') {
-            const {
-              code,
-              name,
-              message,
-              triggeredBy,
-              triggeredAt,
-              forwardedBy,
-              additionalInfo
-            } = err.ilpRejection
-            this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, {
-              code,
-              name,
-              message,
-              triggered_by: triggeredBy,
-              triggered_at: triggeredAt,
-              forwarded_by: (Array.isArray(forwardedBy) && forwardedBy[0]) || '',
-              additional_info: additionalInfo
-            })
+            this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, parseIlpRejection(err.ilpRejection))
           } else {
             this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, {
               code: 'F00',
@@ -317,7 +285,7 @@ module.exports = (oldPlugin) => {
     }
   }
 
-  Plugin.lpiVersion = 2
+  Plugin.version = 2
 
   return new Plugin(oldPlugin)
 }
