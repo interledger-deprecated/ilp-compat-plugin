@@ -3,53 +3,68 @@
 const IlpPacket = require('ilp-packet')
 const debug = require('debug')('ilp-compat-plugin:util')
 
+const ERROR_NAMES = {
+  F00: 'Bad Request',
+  F01: 'Invalid Packet',
+  F02: 'Unreachable',
+  F03: 'Invalid Amount',
+  F04: 'Insufficient Destination Amount',
+  F05: 'Wrong Condition',
+  F06: 'Unexpected Payment',
+  F07: 'Cannot Receive',
+  F99: 'Application Error',
+  T00: 'Internal Error',
+  T01: 'Ledger Unreachable',
+  T02: 'Ledger Busy',
+  T03: 'Connector Busy',
+  T04: 'Insufficient Liquidity',
+  T05: 'Rate Limited',
+  T99: 'Application Error',
+  R00: 'Transfer Timed Out',
+  R01: 'Insufficient Source Amount',
+  R02: 'Insufficient Timeout',
+  R99: 'Application Error'
+}
+
 exports.parseIlpRejection = (packet) => {
   if (!packet) {
     throw new TypeError('No ILP rejection packet')
   }
 
   try {
-    const decodedPacket = IlpPacket.deserializeIlpError(packet)
-    const lastConnector = (decodedPacket.forwardedBy.length ? packet.forwardedBy[decodedPacket.forwardedBy.length - 1] : '')
-
-    let additionalInfo
-    try {
-      additionalInfo = JSON.parse(decodedPacket.data)
-    } catch (e) {
-      debug('error data is not JSON (which is probably fine)')
-      additionalInfo = {}
-    }
+    const decodedPacket = IlpPacket.deserializeIlpRejection(packet)
 
     return {
       code: decodedPacket.code,
-      name: decodedPacket.name,
+      name: ERROR_NAMES[decodedPacket.code],
+      message: decodedPacket.message || '',
       triggered_by: decodedPacket.triggeredBy,
-      forwarded_by: lastConnector,
-      triggered_at: decodedPacket.triggeredAt,
-      additional_info: additionalInfo
+      forwarded_by: '',
+      triggered_at: new Date(),
+      additional_info: { data: decodedPacket.data.toString('base64') }
     }
   } catch (err) {
-    debug('error parsing ILP error packet: ' + (packet && packet.toString('base64')), err)
+    debug('error parsing ILP error packet', err)
     throw new Error('Error while parsing ILP rejection packet')
   }
 }
 
 exports.serializeIlpRejection = (rejectionInfo) => {
-  let forwardedBy
-  if (Array.isArray(rejectionInfo.forwarded_by)) {
-    forwardedBy = rejectionInfo.forwarded_by
-  } else if (typeof rejectionInfo.forwarded_by === 'string') {
-    forwardedBy = [rejectionInfo.forwarded_by]
+  let data
+  if (rejectionInfo.additional_info) {
+    try {
+      data = Buffer.from(rejectionInfo.additional_info.data, 'base64')
+    } catch (err) {
+      data = Buffer.from(JSON.stringify(rejectionInfo.additional_info), 'utf8')
+    }
   } else {
-    forwardedBy = []
+    data = Buffer.alloc(0)
   }
-  return IlpPacket.serializeIlpError({
+  return IlpPacket.serializeIlpRejection({
     code: rejectionInfo.code,
-    name: rejectionInfo.name,
-    triggeredBy: rejectionInfo.triggered_by,
-    forwardedBy,
-    triggeredAt: rejectionInfo.triggered_at,
-    data: rejectionInfo.additional_info ? JSON.stringify(rejectionInfo.additional_info) : ''
+    triggeredBy: rejectionInfo.triggered_by || '',
+    message: rejectionInfo.message || '',
+    data
   })
 }
 
