@@ -9,7 +9,8 @@ const InvalidFieldsError = require('./errors/InvalidFieldsError')
 const IlpPacket = require('ilp-packet')
 const {
   parseIlpRejection,
-  serializeIlpRejection
+  serializeIlpRejection,
+  base64url
 } = require('./util')
 
 const PASSTHROUGH_EVENTS = [
@@ -92,7 +93,7 @@ module.exports = (oldPlugin) => {
         ledger: prefix,
         amount: transfer.amount,
         ilp: transfer.ilp.toString('base64'),
-        executionCondition: transfer.executionCondition,
+        executionCondition: base64url(transfer.executionCondition),
         expiresAt: transfer.expiresAt,
         custom: transfer.custom || {}
       }
@@ -263,7 +264,7 @@ module.exports = (oldPlugin) => {
 
         const { fulfillment, ilp } = await this._transferHandler(transfer)
 
-        this.oldPlugin.fulfillCondition(lpi1Transfer.id, fulfillment, ilp)
+        this.oldPlugin.fulfillCondition(lpi1Transfer.id, base64url(fulfillment), ilp)
       })()
         .catch(err => {
           const errInfo = (typeof err === 'object' && err.stack) ? err.stack : err
