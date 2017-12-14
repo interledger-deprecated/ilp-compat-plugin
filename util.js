@@ -2,35 +2,53 @@
 
 const IlpPacket = require('ilp-packet')
 const debug = require('debug')('ilp-compat-plugin:util')
-const InterledgerRejectionError = require('./errors/InterledgerRejectionError')
 
-exports.parseIlpPayment = (packet) => {
-  try {
-    return IlpPacket.deserializeIlpForwardedPayment(Buffer.from(packet, 'base64'))
-  } catch (err) {
-    debug('error parsing ILP packet: ' + packet)
-    throw new InterledgerRejectionError({
-      code: 'F01',
-      message: 'source transfer has invalid ILP packet'
-    })
-  }
-}
-
-exports.parseIlpFulfillment = (packet) => {
+exports.parseIlpRejection = (packet) => {
   if (!packet) {
-    return { data: '' }
+    throw new TypeError('No ILP rejection packet')
   }
 
   try {
-    return IlpPacket.deserializeIlpFulfillment(Buffer.from(packet, 'base64'))
+    const decodedPacket = IlpPacket.deserializeIlpError(packet)
+    const lastConnector = packet.forwardedBy[packet.forwardedBy.length - 1] || ''
+
+    let additionalInfo
+    try {
+      additionalInfo = JSON.parse(decodedPacket.data)
+    } catch (e) {
+      debug('error data is not JSON (which is probably fine)')
+      additionalInfo = {}
+    }
+
+    return {
+      code: decodedPacket.code,
+      name: decodedPacket.name,
+      triggered_by: decodedPacket.triggeredBy,
+      forwarded_by: lastConnector,
+      triggered_at: decodedPacket.triggeredAt,
+      additional_info: additionalInfo
+    }
   } catch (err) {
-    // When parsing fulfillment data, we want to ignore errors, because we still
-    // want to pass on the fulfillment no matter what.
-    debug('error parsing ILP fulfillment data: ' + packet)
-    return { data: '' }
+    debug('error parsing ILP error packet: ' + (packet && packet.toString('base64')))
+    throw new Error('Error while parsing ILP rejection packet')
   }
 }
 
-exports.serializeIlpFulfillment = ({ data }) => {
-  return IlpPacket.serializeIlpFulfillment({ data: data.toString('base64') }).toString('base64')
+exports.serializeIlpRejection = (rejectionInfo) => {
+  let forwardedBy
+  if (Array.isArray(rejectionInfo.forwarded_by)) {
+    forwardedBy = rejectionInfo.forwarded_by
+  } else if (typeof rejectionInfo.forwarded_by === 'string') {
+    forwardedBy = [rejectionInfo.forwarded_by]
+  } else {
+    forwardedBy = []
+  }
+  return IlpPacket.serializeIlpError({
+    code: rejectionInfo.code,
+    name: rejectionInfo.name,
+    triggeredBy: rejectionInfo.triggered_by,
+    forwardedBy,
+    triggeredAt: rejectionInfo.triggered_at,
+    data: rejectionInfo.additional_info ? JSON.stringify(rejectionInfo.additional_info) : ''
+  })
 }
