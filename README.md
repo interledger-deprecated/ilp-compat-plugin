@@ -13,7 +13,7 @@ const Plugin = require('some-old-plugin')
 
 const plugin = compat(new Plugin({ ... }))
 
-console.log(plugin.constructor.lpiVersion) // => 2
+console.log(plugin.constructor.version) // => 2
 
 // Use LPI2
 const { fulfillment, data } = await plugin.sendTransfer({ ... })

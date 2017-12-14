@@ -83,7 +83,7 @@ module.exports = (oldPlugin) => {
 
       const id = uuid()
       const prefix = this.getInfo().prefix
-      console.log('transfer.ilp', transfer.ilp)
+
       const to = this._getTo(IlpPacket.deserializeIlpPacket(transfer.ilp).data.account)
 
       const lpi1Transfer = {
@@ -101,7 +101,6 @@ module.exports = (oldPlugin) => {
       return new Promise((resolve, reject) => {
         this.transfers[id] = { resolve, reject }
 
-        console.log(lpi1Transfer)
         this.oldPlugin.sendTransfer(lpi1Transfer)
           .catch(reject)
       })
@@ -177,11 +176,10 @@ module.exports = (oldPlugin) => {
       }
       debug(`fulfillment for transfer ${transfer.id}`)
 
-      console.log('ilp', ilp)
       const { resolve } = this.transfers[transfer.id]
 
       resolve({
-        fulfillment,
+        fulfillment: Buffer.from(fulfillment || '', 'base64'),
         ilp: Buffer.from(ilp || '', 'base64')
       })
     }
@@ -247,7 +245,7 @@ module.exports = (oldPlugin) => {
       const transfer = {
         amount: lpi1Transfer.amount,
         ilp: Buffer.from(lpi1Transfer.ilp || '', 'base64'),
-        executionCondition: lpi1Transfer.executionCondition,
+        executionCondition: Buffer.from(lpi1Transfer.executionCondition, 'base64'),
         expiresAt: lpi1Transfer.expiresAt,
         custom: lpi1Transfer.custom || {}
       }
