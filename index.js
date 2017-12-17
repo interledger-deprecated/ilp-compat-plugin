@@ -20,6 +20,8 @@ const PASSTHROUGH_EVENTS = [
   'info_change'
 ]
 
+const COMPAT_SYMBOL = Symbol.for('org.interledgerjs.ilp-compat-plugin.idempotence')
+
 module.exports = (oldPlugin) => {
   if (typeof oldPlugin !== 'object') {
     throw new TypeError('not a plugin: not an object')
@@ -31,6 +33,10 @@ module.exports = (oldPlugin) => {
 
   if (oldPlugin.constructor.version === 2) {
     return oldPlugin
+  }
+
+  if (oldPlugin[COMPAT_SYMBOL]) {
+    return oldPlugin[COMPAT_SYMBOL]
   }
 
   class Plugin extends EventEmitter {
@@ -283,7 +289,11 @@ module.exports = (oldPlugin) => {
 
   Plugin.version = 2
 
-  return new Plugin(oldPlugin)
+  const instance = new Plugin(oldPlugin)
+
+  oldPlugin[COMPAT_SYMBOL] = instance
+
+  return instance
 }
 
 function startsWith (prefix, subject) {
