@@ -141,12 +141,35 @@ module.exports = (oldPlugin) => {
       }, request))
     }
 
+    /**
+     * Register a request handler.
+     *
+     * This functionality is considered deprecated and will likely be removed.
+     *
+     * @param {Function} handler Callback to invoke when a request is received.
+     */
     registerRequestHandler (handler) {
       return this.oldPlugin.registerRequestHandler(handler)
     }
 
+    /**
+     * Deregister a request handler.
+     *
+     * This functionality is considered deprecated and will likely be removed.
+     */
     deregisterRequestHandler () {
       return this.oldPlugin.deregisterRequestHandler()
+    }
+
+    /**
+     * Get plugin account.
+     *
+     * This functionality is considered deprecated and will likely be removed.
+     *
+     * @return {string} ILP address of this plugin
+     */
+    getAccount () {
+      return this.oldPlugin.getAccount()
     }
 
     _getTo (destination) {
@@ -193,17 +216,7 @@ module.exports = (oldPlugin) => {
 
       const { reject } = this.transfers[transfer.id]
 
-      let forwardedBy
-      if (Array.isArray(reason.forwarded_by)) {
-        forwardedBy = reason.forwarded_by
-      } else if (typeof reason.forwarded_by === 'string') {
-        forwardedBy = [reason.forwarded_by]
-      } else {
-        forwardedBy = []
-      }
-      reject(new InterledgerRejectionError({
-        message: reason.message,
-        ilpRejection: serializeIlpRejection(reason)
+      reject(serializeIlpRejection(reason))
     }
 
     _handleOutgoingCancel (transfer, reason) {
@@ -215,23 +228,7 @@ module.exports = (oldPlugin) => {
 
       const { reject } = this.transfers[transfer.id]
 
-      let forwardedBy
-      if (Array.isArray(reason.forwarded_by)) {
-        forwardedBy = reason.forwarded_by
-      } else if (typeof reason.forwarded_by === 'string') {
-        forwardedBy = [reason.forwarded_by]
-      } else {
-        forwardedBy = []
-      }
-      reject(new InterledgerRejectionError({
-        code: reason.code,
-        name: reason.name,
-        message: reason.message,
-        triggeredBy: reason.triggered_by,
-        triggeredAt: reason.triggered_at,
-        forwardedBy,
-        additionalInfo: reason.additional_info
-      }))
+      reject(serializeIlpRejection(reason))
     }
 
     _handleIncomingTransfer (lpi1Transfer) {

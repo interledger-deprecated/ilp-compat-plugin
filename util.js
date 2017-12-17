@@ -2,6 +2,7 @@
 
 const IlpPacket = require('ilp-packet')
 const debug = require('debug')('ilp-compat-plugin:util')
+const InterledgerRejectionError = require('./errors/InterledgerRejectionError')
 
 const ERROR_NAMES = {
   F00: 'Bad Request',
@@ -34,37 +35,53 @@ exports.parseIlpRejection = (packet) => {
   try {
     const decodedPacket = IlpPacket.deserializeIlpRejection(packet)
 
-    return {
+    const reason = {
       code: decodedPacket.code,
       name: ERROR_NAMES[decodedPacket.code],
       message: decodedPacket.message || '',
       triggered_by: decodedPacket.triggeredBy,
       forwarded_by: '',
       triggered_at: new Date(),
-      additional_info: { data: decodedPacket.data.toString('base64') }
+      additional_info: { message: decodedPacket.message || '', data: decodedPacket.data.toString('base64') }
     }
+
+    return reason
   } catch (err) {
     debug('error parsing ILP error packet', err)
     throw new Error('Error while parsing ILP rejection packet')
   }
 }
 
-exports.serializeIlpRejection = (rejectionInfo) => {
-  let data
-  if (rejectionInfo.additional_info) {
+exports.serializeIlpRejection = (reason) => {
+  let additionalInfo
+  if (typeof reason.additional_info === 'string') {
     try {
-      data = Buffer.from(rejectionInfo.additional_info.data, 'base64')
-    } catch (err) {
-      data = Buffer.from(JSON.stringify(rejectionInfo.additional_info), 'utf8')
+      additionalInfo = JSON.parse(reason.additional_info)
+    } catch (e) {
+      additionalInfo = {}
     }
+  } else if (typeof reason.additional_info === 'object' && reason.additional_info !== null) {
+    additionalInfo = reason.additional_info
   } else {
-    data = Buffer.alloc(0)
+    additionalInfo = {}
   }
-  return IlpPacket.serializeIlpRejection({
-    code: rejectionInfo.code,
-    triggeredBy: rejectionInfo.triggered_by || '',
-    message: rejectionInfo.message || '',
-    data
+
+  let data = Buffer.alloc(0)
+  try {
+    data = Buffer.from(additionalInfo.data, 'base64')
+  } catch (err) {
+  }
+
+  const message = reason.message || additionalInfo.message || ''
+
+  return new InterledgerRejectionError({
+    message,
+    ilpRejection: IlpPacket.serializeIlpRejection({
+      code: reason.code,
+      triggeredBy: reason.triggered_by || '',
+      message,
+      data
+    })
   })
 }
 
