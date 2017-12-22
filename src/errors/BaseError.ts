@@ -1,5 +1,3 @@
-'use strict'
-
 /**
  * Extensible error class.
  *
@@ -13,9 +11,10 @@
  *
  * Note that this code is specific to V8 (due to `Error.captureStackTrace`).
  */
-class BaseError extends Error {
-  constructor (message) {
+export class BaseError extends Error {
+  constructor (message: string) {
     super()
+    Object.setPrototypeOf(this, BaseError)
 
     // Set this.message
     Object.defineProperty(this, 'message', {
@@ -24,16 +23,7 @@ class BaseError extends Error {
       value: message !== undefined ? String(message) : ''
     })
 
-    // Set this.name
-    Object.defineProperty(this, 'name', {
-      configurable: true,
-      enumerable: false,
-      value: this.constructor.name
-    })
-
     // Set this.stack
     Error.captureStackTrace(this, this.constructor)
   }
 }
-
-module.exports = BaseError

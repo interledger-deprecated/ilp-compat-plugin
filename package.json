@@ -2,10 +2,12 @@
   "name": "ilp-compat-plugin",
   "version": "1.0.0",
   "description": "Convert a Ledger Plugin Interface (LPI) version 1 plugin to LPIv2",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "lint": "eslint .",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "lint": "tslint src/**/*",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rm -rf dist ; tsc"
   },
   "repository": {
     "type": "git",
@@ -22,7 +24,8 @@
     "convert",
     "lpi1",
     "lpi2",
-    "lpi"
+    "lpi",
+    "lpiv2"
   ],
   "author": "Interledger Team <info@interledger.org>",
   "license": "Apache-2.0",
@@ -32,15 +35,15 @@
   "homepage": "https://github.com/justmoon/ilp-compat-plugin#readme",
   "dependencies": {
     "debug": "^3.1.0",
-    "ilp-packet": "^2.0.0",
+    "ilp-packet": "^2.0.1",
     "uuid": "^3.1.0"
   },
   "devDependencies": {
-    "eslint": "^4.12.1",
-    "eslint-config-standard": "^10.2.1",
-    "eslint-plugin-import": "^2.8.0",
-    "eslint-plugin-node": "^5.2.1",
-    "eslint-plugin-promise": "^3.6.0",
-    "eslint-plugin-standard": "^3.0.1"
+    "@types/debug": "0.0.30",
+    "@types/node": "^8.5.2",
+    "@types/uuid": "^3.4.3",
+    "tslint": "^5.8.0",
+    "tslint-config-standard": "^7.0.0",
+    "typescript": "^2.6.2"
   }
 }
