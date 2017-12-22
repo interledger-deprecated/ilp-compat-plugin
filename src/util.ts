@@ -1,10 +1,9 @@
-'use strict'
+import * as IlpPacket from 'ilp-packet'
+import * as Debug from 'debug'
+const debug = Debug('ilp-compat-plugin:util')
+import { InterledgerRejectionError } from './errors'
 
-const IlpPacket = require('ilp-packet')
-const debug = require('debug')('ilp-compat-plugin:util')
-const InterledgerRejectionError = require('./errors/InterledgerRejectionError')
-
-const ERROR_NAMES = {
+export const ERROR_NAMES = {
   F00: 'Bad Request',
   F01: 'Invalid Packet',
   F02: 'Unreachable',
@@ -27,7 +26,17 @@ const ERROR_NAMES = {
   R99: 'Application Error'
 }
 
-exports.parseIlpRejection = (packet) => {
+export interface RejectionReasonV1 {
+  code: string,
+  name: string,
+  message: string,
+  triggered_by: string,
+  triggered_at: Date,
+  forwarded_by: string,
+  additional_info: Object | string
+}
+
+export const parseIlpRejection = (packet: Buffer): RejectionReasonV1 => {
   if (!packet) {
     throw new TypeError('No ILP rejection packet')
   }
@@ -52,7 +61,7 @@ exports.parseIlpRejection = (packet) => {
   }
 }
 
-exports.serializeIlpRejection = (reason) => {
+export const serializeIlpRejection = (reason: RejectionReasonV1): InterledgerRejectionError => {
   let additionalInfo
   if (typeof reason.additional_info === 'string') {
     try {
@@ -72,22 +81,21 @@ exports.serializeIlpRejection = (reason) => {
   } catch (err) {
   }
 
-  const message = reason.message || additionalInfo.message || ''
+  const message: string = reason.message || additionalInfo.message || ''
 
-  return new InterledgerRejectionError({
+  return new InterledgerRejectionError(
     message,
-    ilpRejection: IlpPacket.serializeIlpRejection({
+    IlpPacket.serializeIlpRejection({
       code: reason.code,
       triggeredBy: reason.triggered_by || '',
       message,
       data
     })
-  })
+  )
 }
 
-exports.base64url = (buffer) => {
-  return Buffer.from(buffer, 'base64')
-    .toString('base64')
+export const base64url = (buffer: Buffer) => {
+  return buffer.toString('base64')
     .replace(/=$/g, '')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
