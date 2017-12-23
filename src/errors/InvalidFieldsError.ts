@@ -1,4 +1,4 @@
-import { BaseError } from './BaseError'
+import BaseError from './BaseError'
 
-export class InvalidFieldsError extends BaseError {
+export default class InvalidFieldsError extends BaseError {
 }

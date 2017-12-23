@@ -11,8 +11,8 @@
  *
  * Note that this code is specific to V8 (due to `Error.captureStackTrace`).
  */
-export class BaseError extends Error {
-  constructor (message: string) {
+export default class BaseError extends Error {
+  constructor (message?: string) {
     super()
     Object.setPrototypeOf(this, BaseError)
 

@@ -12,6 +12,7 @@
         "strictNullChecks": true,
         "suppressImplicitAnyIndexErrors": true
     },
+    "compileOnSave": true,
     "include": [
         "src/**/*.ts"
     ]
