@@ -1,74 +1,62 @@
-import * as uuid from 'uuid'
 import { EventEmitter } from 'events'
-import * as debug from 'debug'
-import { InterledgerRejectionError, TransferHandlerAlreadyRegisteredError, InvalidFieldsError } from './errors'
+import InvalidFieldsError from './errors/InvalidFieldsError'
+import DataHandlerAlreadyRegisteredError from './errors/DataHandlerAlreadyRegisteredError'
+import MoneyHandlerAlreadyRegisteredError from './errors/MoneyHandlerAlreadyRegisteredError'
 import * as IlpPacket from 'ilp-packet'
+import { Writer } from 'oer-utils'
+
 import {
-  parseIlpRejection,
-  serializeIlpRejection,
-  base64url,
-  RejectionReasonV1
+  lpi1TransferToIlpPrepare,
+  ilpFulfillToLpi1Fulfillment,
+  lpi1FulfillmentToIlpFulfill,
+  ilpRejectToLpi1Rejection,
+  lpi1RejectionToIlpReject,
+  ilpPrepareToLpi1Transfer
+} from './converters'
+
+import {
+  base64url
 } from './util'
 
-export { 
-  InterledgerRejectionError, 
-  TransferHandlerAlreadyRegisteredError, 
-  InvalidFieldsError 
-} 
+import {
+  TransferV1,
+  RejectionReasonV1,
+  MessageV1
+} from './types'
 
-export interface TransferV2 {
-  ilp: Buffer,
-  amount: string,
-  executionCondition: Buffer,
-  expiresAt: string,
-  custom?: Object
-}
+const debug = require('debug')('ilp-compat-plugin')
 
-export interface TransferV1 {
-  id: string,
-  to?: string,
-  from?: string,
-  ledger?: string,
-  ilp: string,
-  executionCondition: string,
-  expiresAt: string,
-  amount: string,
-  custom: Object
-}
+export {
+  InvalidFieldsError,
+  DataHandlerAlreadyRegisteredError,
+  MoneyHandlerAlreadyRegisteredError,
 
-export interface MessageV1 {
-  id: string,
-  from?: string,
-  to?: string,
-  ledger?: string,
-  ilp?: Buffer,
-  custom?: Object
-}
-
-export interface TransferV2Handler {
-  (transfer: TransferV2): any
-}
-
-export interface RequestV1Handler {
-  (request: MessageV1): any
-}
-
-export interface FulfillmentInfo {
-  fulfillment: Buffer,
-  ilp: Buffer
+  TransferV1
 }
 
 export interface FunctionWithVersion extends Function {
   version?: number
 }
 
+export interface DataHandler {
+  (data: Buffer): Promise<Buffer>
+}
+
+export interface MoneyHandler {
+  (amount: string): Promise<void>
+}
+
 export interface PluginV2 extends EventEmitter {
-  constructor: FunctionWithVersion,
-  connect: () => Promise<void>,
-  disconnect: () => Promise<void>,
-  isConnected: () => boolean,
-  getInfo: () => Object,
-  sendTransfer: (transfer: TransferV2) => Promise<FulfillmentInfo>
+  constructor: FunctionWithVersion
+  connect: () => Promise<void>
+  disconnect: () => Promise<void>
+  isConnected: () => boolean
+  sendData: DataHandler
+  sendMoney: MoneyHandler
+  registerDataHandler: (handler: DataHandler) => void
+  deregisterDataHandler: () => void
+  registerMoneyHandler: (handler: MoneyHandler) => void
+  deregisterMoneyHandler: () => void
 }
 
 export interface PluginV1 extends EventEmitter {
@@ -83,38 +71,17 @@ const PASSTHROUGH_EVENTS = [
   'info_change'
 ]
 
+const PEER_PROTOCOL_FULFILLMENT = Buffer.alloc(32)
+
 export const COMPAT_SYMBOL = Symbol()
-
-export default function convert (oldPlugin: PluginV1 | PluginV2): PluginV2 {
-  if (typeof oldPlugin !== 'object') {
-    throw new TypeError('not a plugin: not an object')
-  }
-
-  if (typeof oldPlugin.sendTransfer !== 'function') {
-    throw new TypeError('not a plugin: no sendTransfer method')
-  }
-
-  if ((<PluginV2>oldPlugin).constructor.version === 2) {
-    return (<PluginV2>oldPlugin)
-  }
-
-  if (oldPlugin[COMPAT_SYMBOL]) {
-    return oldPlugin[COMPAT_SYMBOL]
-  }
-
-  const instance = new Plugin(oldPlugin)
-
-  oldPlugin[COMPAT_SYMBOL] = instance
-
-  return instance
-}
 
 class Plugin extends EventEmitter {
   static readonly version = 2
 
   private oldPlugin: any
   private transfers: Object
-  private _transferHandler?: TransferV2Handler
+  private _dataHandler?: DataHandler
+  private _moneyHandler?: MoneyHandler
 
   constructor (oldPlugin: any) {
     super()
@@ -135,10 +102,15 @@ class Plugin extends EventEmitter {
     }
 
     this.oldPlugin.on('outgoing_fulfill', this._handleOutgoingFulfill.bind(this))
-    this.oldPlugin.on('outgoing_reject', this._handleOutgoingReject.bind(this))
-    this.oldPlugin.on('outgoing_cancel', this._handleOutgoingCancel.bind(this))
+    this.oldPlugin.on('outgoing_reject', this._handleOutgoingReject.bind(this, 'reject'))
+    this.oldPlugin.on('outgoing_cancel', this._handleOutgoingReject.bind(this, 'cancel'))
     this.oldPlugin.on('incoming_transfer', this._handleIncomingTransfer.bind(this))
     this.oldPlugin.on('incoming_prepare', this._handleIncomingPrepare.bind(this))
+    this.oldPlugin.registerRequestHandler(this._handleRequest.bind(this))
+  }
+
+  static isV2Plugin (plugin: PluginV1 | PluginV2): plugin is PluginV2 {
+    return plugin.constructor.version === 2
   }
 
   connect () {
@@ -153,112 +125,81 @@ class Plugin extends EventEmitter {
     return this.oldPlugin.isConnected()
   }
 
-  getInfo () {
-    return this.oldPlugin.getInfo()
-  }
-
-  async sendTransfer (transfer: TransferV2): Promise<FulfillmentInfo> {
-    if (typeof transfer.ilp === 'string') {
-      throw new TypeError('ILP packet was passed as a string, should be Buffer')
+  async sendData (data: Buffer) {
+    if (!Buffer.isBuffer(data)) {
+      throw new TypeError('sendData must be passed a buffer. typeof=' + typeof data)
     }
 
-    const id = uuid()
-    const prefix = this.getInfo().prefix
+    if (data[0] === IlpPacket.Type.TYPE_ILP_PREPARE) {
+      const ilpPrepare = IlpPacket.deserializeIlpPrepare(data)
 
-    const packet = IlpPacket.deserializeIlpPacket(transfer.ilp).data
+      if (ilpPrepare.destination === 'peer.config') {
+        return this._getIldcpResponse()
+      }
 
-    const destinationAccount = (<IlpPacket.IlpForwardedPayment>packet || <IlpPacket.IlpPayment>packet).account
-    const to = (destinationAccount ? this._getTo(destinationAccount) : '')
+      const lpi1Transfer = ilpPrepareToLpi1Transfer(ilpPrepare)
 
-    const lpi1Transfer = {
-      id,
-      from: this.oldPlugin.getAccount(),
-      to,
-      ledger: prefix,
-      amount: transfer.amount,
-      ilp: transfer.ilp.toString('base64'),
-      executionCondition: base64url(transfer.executionCondition),
-      expiresAt: transfer.expiresAt,
-      custom: transfer.custom || {}
+      lpi1Transfer.to = this._getTo(ilpPrepare.destination)
+      lpi1Transfer.from = this.oldPlugin.getAccount(),
+      lpi1Transfer.ledger = this.oldPlugin.getInfo().prefix
+
+      return new Promise((resolve, reject) => {
+        this.transfers[lpi1Transfer.id] = { resolve, reject }
+
+        this.oldPlugin.sendTransfer(lpi1Transfer)
+          .catch(reject)
+      })
+    } else {
+      return this.oldPlugin.sendRequest({
+        from: this.oldPlugin.getAccount(),
+        to: this._getTo(),
+        ledger: this.oldPlugin.getInfo().prefix,
+        ilp: base64url(data)
+      })
     }
-
-    const fulfillmentPromise: Promise<FulfillmentInfo> = new Promise((resolve, reject) => {
-      this.transfers[id] = { resolve, reject }
-
-      this.oldPlugin.sendTransfer(lpi1Transfer)
-        .catch(reject)
-    })
-    return fulfillmentPromise
   }
 
-  registerTransferHandler (handler: TransferV2Handler): void {
-    if (this._transferHandler) {
-      throw new TransferHandlerAlreadyRegisteredError('requestHandler is already registered')
+  async sendMoney (amount: string) {
+    // TODO: We already send money when making ILP payments. But perhaps we
+    //   should be smart enough to also send money (using optimistic mode) when
+    //   the amount from sendMoney calls exceeds the amount from ILP payments.
+    return
+  }
+
+  registerDataHandler (handler: DataHandler): void {
+    if (this._dataHandler) {
+      throw new DataHandlerAlreadyRegisteredError('data handler is already registered.')
     }
 
     if (typeof handler !== 'function') {
-      throw new InvalidFieldsError('requestHandler must be a function')
+      throw new InvalidFieldsError('data handler must be a function.')
     }
 
-    this._transferHandler = handler
+    this._dataHandler = handler
   }
 
-  deregisterTransferHandler (): void {
-    this._transferHandler = undefined
+  deregisterDataHandler (): void {
+    this._dataHandler = undefined
   }
 
-  /**
-   * Send a request.
-   *
-   * This functionality is considered deprecated and will likely be removed.
-   *
-   * @param {Message} request Request message
-   * @return {Promise<Message>} Response message
-   */
-  sendRequest (request: MessageV1): Promise<null> {
-    const ledger = this.getInfo().prefix
-    const to = this._getTo()
+  registerMoneyHandler (handler: MoneyHandler): void {
+    if (this._moneyHandler) {
+      throw new MoneyHandlerAlreadyRegisteredError('money handler is already registered.')
+    }
 
-    return this.oldPlugin.sendRequest(Object.assign({
-      ledger,
-      from: this.oldPlugin.getAccount(),
-      to
-    }, request))
+    if (typeof handler !== 'function') {
+      throw new InvalidFieldsError('money handler must be a function.')
+    }
+
+    this._moneyHandler = handler
   }
 
-  /**
-   * Register a request handler.
-   *
-   * This functionality is considered deprecated and will likely be removed.
-   *
-   * @param {Function} handler Callback to invoke when a request is received.
-   */
-  registerRequestHandler (handler: RequestV1Handler): null {
-    return this.oldPlugin.registerRequestHandler(handler)
-  }
-
-  /**
-   * Deregister a request handler.
-   *
-   * This functionality is considered deprecated and will likely be removed.
-   */
-  deregisterRequestHandler (): null {
-    return this.oldPlugin.deregisterRequestHandler()
-  }
-
-  /**
-   * Get plugin account.
-   *
-   * This functionality is considered deprecated and will likely be removed.
-   *
-   * @return {string} ILP address of this plugin
-   */
-  getAccount (): string {
-    return this.oldPlugin.getAccount()
+  deregisterMoneyHandler (): void {
+    this._moneyHandler = undefined
   }
 
   protected _getTo (destination?: string): string {
-    const prefix = this.getInfo().prefix
+    const prefix = this.oldPlugin.getInfo().prefix
 
     let to
     if (destination && destination.startsWith(prefix)) {
@@ -267,7 +208,7 @@ class Plugin extends EventEmitter {
       to = prefix + destination.substring(prefix.length).split('.')[0]
     } else {
       // Otherwise, we deliver to the default connector
-      to = this.getInfo().connectors[0]
+      to = this.oldPlugin.getInfo().connectors[0]
     }
 
     if (!to) {
@@ -279,96 +220,160 @@ class Plugin extends EventEmitter {
 
   protected _handleOutgoingFulfill (transfer: TransferV1, fulfillment: string, ilp: string) {
     if (!this.transfers[transfer.id]) {
-      debug(`fulfillment for transfer ${transfer.id} ignored, unknown transfer id`)
+      debug('fulfillment for outgoing transfer ignored, unknown transfer id. transferId=%s', transfer.id)
       return
     }
-    debug(`fulfillment for transfer ${transfer.id}`)
+    debug('outgoing transfer fulfilled. transferId=%s', transfer.id)
+
+    const ilpFulfill = lpi1FulfillmentToIlpFulfill(fulfillment, ilp)
 
     const { resolve } = this.transfers[transfer.id]
 
-    resolve({
-      fulfillment: Buffer.from(fulfillment || '', 'base64'),
-      ilp: Buffer.from(ilp || '', 'base64')
-    })
+    resolve(ilpFulfill)
   }
 
-  protected _handleOutgoingReject (transfer: TransferV1, reason: RejectionReasonV1) {
+  protected _handleOutgoingReject (type: 'reject' | 'cancel', transfer: TransferV1, reason: RejectionReasonV1) {
     if (!this.transfers[transfer.id]) {
-      debug(`rejection for transfer ${transfer.id} ignored, unknown transfer id`)
+      debug('%sion for outgoing transfer ignored, unknown transfer id. transferId=%s', type, transfer.id)
       return
     }
-    debug(`rejection for transfer ${transfer.id}`)
+    debug('outgoing transfer %sed. transferId=%s', type, transfer.id)
 
-    const { reject } = this.transfers[transfer.id]
+    const { resolve, reject } = this.transfers[transfer.id]
 
-    reject(serializeIlpRejection(reason))
-  }
+    try {
+      const ilpReject = lpi1RejectionToIlpReject(reason)
 
-  protected _handleOutgoingCancel (transfer: TransferV1, reason: RejectionReasonV1) {
-    if (!this.transfers[transfer.id]) {
-      debug(`cancellation for transfer ${transfer.id} ignored, unknown transfer id`)
-      return
+      // ILP rejections are successful returns from a plugin perspective, i.e.
+      // we sent data and we successfully got a response.
+      resolve(ilpReject)
+    } catch (err) {
+      reject(err)
     }
-    debug(`cancellation for transfer ${transfer.id}`)
-
-    const { reject } = this.transfers[transfer.id]
-
-    reject(serializeIlpRejection(reason))
   }
 
   protected _handleIncomingTransfer (lpi1Transfer: TransferV1) {
-    // TODO Handle incoming optimistic transfers
-    console.warn('ilp-compat-plugin: Optimistic transfers not yet implemented')
+    debug('incoming optimistic transfer. transferId=%s amount=%s', lpi1Transfer.id, lpi1Transfer.amount)
+
+    if (!this._moneyHandler) {
+      debug(`no money handler, ignoring incoming optimistic transfer ${lpi1Transfer.id}`)
+      return
+    }
+
+    Promise.resolve(this._moneyHandler(lpi1Transfer.amount))
+      .catch(err => {
+        const errInfo = (err && typeof err === 'object' && err.stack) ? err.stack : err
+        debug(`could not process incoming money ${lpi1Transfer.id}: ${errInfo}`)
+      })
   }
 
   protected _handleIncomingPrepare (lpi1Transfer: TransferV1) {
-    debug(`incoming prepared transfer ${lpi1Transfer.id}`)
+    debug('incoming prepared transfer. transferId=%s', lpi1Transfer.id)
 
-    const transfer = {
-      amount: lpi1Transfer.amount,
-      ilp: Buffer.from(lpi1Transfer.ilp || '', 'base64'),
-      executionCondition: Buffer.from(lpi1Transfer.executionCondition, 'base64'),
-      expiresAt: lpi1Transfer.expiresAt,
-      custom: lpi1Transfer.custom || {}
-    }
+    const ilpPrepare = lpi1TransferToIlpPrepare(lpi1Transfer)
 
     ;(async () => {
-      if (!this._transferHandler) {
-        debug(`no transfer handler, rejecting incoming transfer ${lpi1Transfer.id}`)
+      if (!this._dataHandler) {
+        debug(`no data handler, rejecting incoming transfer ${lpi1Transfer.id}`)
         // Reject incoming transfer due to lack of handler
-        throw new InterledgerRejectionError(
-          'No transfer handler registered',
-          IlpPacket.serializeIlpRejection({
-            code: 'T01', // Ledger Unreachable
-            message: 'No transfer handler registered',
-            triggeredBy: this.oldPlugin.getAccount(),
-            data: Buffer.alloc(0)
-          })
-        )
+        this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, {
+          code: 'T01',
+          name: 'Ledger Unreachable',
+          message: 'No data handler registered',
+          triggered_by: this.oldPlugin.getAccount(),
+          triggered_at: new Date(),
+          forwarded_by: ''
+        })
+        return
       }
 
-      const { fulfillment, ilp } = await this._transferHandler(transfer)
+      const responsePacket = await this._dataHandler(ilpPrepare)
 
-      this.oldPlugin.fulfillCondition(lpi1Transfer.id, base64url(fulfillment), ilp)
+      if (responsePacket[0] === IlpPacket.Type.TYPE_ILP_FULFILL) {
+        const { fulfillment, ilp } = ilpFulfillToLpi1Fulfillment(responsePacket)
+
+        this.oldPlugin.fulfillCondition(lpi1Transfer.id, fulfillment, ilp)
+      } else if (responsePacket[0] === IlpPacket.Type.TYPE_ILP_REJECT) {
+        const reason = ilpRejectToLpi1Rejection(responsePacket)
+
+        this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, reason)
+      } else {
+        throw new Error('unknown ilp response packet.')
+      }
     })()
       .catch(err => {
-        const errInfo = (typeof err === 'object' && err.stack) ? err.stack : err
+        const errInfo = (err && typeof err === 'object' && err.stack) ? err.stack : err
         debug(`could not process incoming transfer ${lpi1Transfer.id}: ${errInfo}`)
 
-        if (err.name === 'InterledgerRejectionError') {
-          this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, parseIlpRejection(err.ilpRejection))
-        } else {
-          this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, {
-            code: 'F00',
-            name: 'Bad Request',
-            message: err.message,
-            triggered_by: '',
-            triggered_at: new Date(),
-            forwarded_by: ''
-          })
-        }
+        this.oldPlugin.rejectIncomingTransfer(lpi1Transfer.id, {
+          code: 'F00',
+          name: 'Bad Request',
+          message: err.message,
+          triggered_by: '',
+          triggered_at: new Date(),
+          forwarded_by: ''
+        })
       })
   }
+
+  protected async _handleRequest (request: MessageV1) {
+    if (!this._dataHandler) {
+      debug(`no data handler, rejecting incoming request ${request.id}`)
+      throw new Error('no handler.')
+    }
+
+    if (request.ilp) {
+      return {
+        to: request.from,
+        from: request.to,
+        ledger: request.ledger,
+        ilp: base64url(await this._dataHandler(Buffer.from(request.ilp, 'base64')))
+      }
+    } else {
+      throw new Error('cannot handle requests without ilp packet')
+    }
+  }
+
+  protected _getIldcpResponse () {
+    const info = this.oldPlugin.getInfo()
+    console.log('info', info)
+    const clientName = this.oldPlugin.getAccount()
+
+    const writer = new Writer()
+    writer.writeVarOctetString(Buffer.from(clientName, 'ascii'))
+    writer.writeUInt8(info.currencyScale || 9)
+    writer.writeVarOctetString(Buffer.from(info.currency || '', 'utf8'))
+    const ildcpResponse = writer.getBuffer()
+
+    return IlpPacket.serializeIlpFulfill({
+      fulfillment: PEER_PROTOCOL_FULFILLMENT,
+      data: ildcpResponse
+    })
+  }
+}
+
+export default function convert (oldPlugin: PluginV1 | PluginV2): PluginV2 {
+  if (typeof oldPlugin !== 'object') {
+    throw new TypeError('not a plugin: not an object')
+  }
+
+  if (Plugin.isV2Plugin(oldPlugin)) {
+    return oldPlugin
+  }
+
+  if (typeof oldPlugin.sendTransfer !== 'function') {
+    throw new TypeError('not a plugin: no sendTransfer method')
+  }
+
+  if (oldPlugin[COMPAT_SYMBOL]) {
+    return oldPlugin[COMPAT_SYMBOL]
+  }
+
+  const instance = new Plugin(oldPlugin)
+
+  oldPlugin[COMPAT_SYMBOL] = instance
+
+  return instance
 }
 
 // Support both the Node.js and ES6 module exports
