@@ -150,12 +150,26 @@ class Plugin extends EventEmitter {
           .catch(reject)
       })
     } else {
-      return this.oldPlugin.sendRequest({
+      const responseMessage = await this.oldPlugin.sendRequest({
         from: this.oldPlugin.getAccount(),
         to: this._getTo(),
         ledger: this.oldPlugin.getInfo().prefix,
         ilp: base64url(data)
       })
+
+      if (responseMessage.ilp) {
+        return Buffer.from(responseMessage.ilp, 'base64')
+      } else if (
+        responseMessage.custom &&
+        typeof responseMessage.custom === 'object' &&
+        Object.keys(responseMessage.custom).length
+      ) {
+        // Convert old "custom" based requests (like CCPv1) into data
+        return Buffer.from(JSON.stringify(responseMessage.custom))
+      } else {
+        debug('received empty response.')
+        return Buffer.alloc(0)
+      }
     }
   }
 
