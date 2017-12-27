@@ -79,7 +79,12 @@ class Plugin extends EventEmitter {
   static readonly version = 2
 
   private oldPlugin: any
-  private transfers: Object
+  private transfers: {
+    [key: string]: {
+      resolve: (result: Buffer) => void,
+      reject: (err: Error) => void
+    }
+  }
   private _dataHandler?: DataHandler
   private _moneyHandler?: MoneyHandler
 
@@ -125,7 +130,7 @@ class Plugin extends EventEmitter {
     return this.oldPlugin.isConnected()
   }
 
-  async sendData (data: Buffer) {
+  async sendData (data: Buffer): Promise<Buffer> {
     if (!Buffer.isBuffer(data)) {
       throw new TypeError('sendData must be passed a buffer. typeof=' + typeof data)
     }
@@ -143,7 +148,7 @@ class Plugin extends EventEmitter {
       lpi1Transfer.from = this.oldPlugin.getAccount(),
       lpi1Transfer.ledger = this.oldPlugin.getInfo().prefix
 
-      return new Promise((resolve, reject) => {
+      return new Promise<Buffer>((resolve, reject) => {
         this.transfers[lpi1Transfer.id] = { resolve, reject }
 
         this.oldPlugin.sendTransfer(lpi1Transfer)
