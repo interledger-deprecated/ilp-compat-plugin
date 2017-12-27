@@ -336,7 +336,6 @@ class Plugin extends EventEmitter {
 
   protected _getIldcpResponse () {
     const info = this.oldPlugin.getInfo()
-    console.log('info', info)
     const clientName = this.oldPlugin.getAccount()
 
     const writer = new Writer()
