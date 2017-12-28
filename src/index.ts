@@ -353,14 +353,17 @@ class Plugin extends EventEmitter {
     }
   }
 
-  protected _getIldcpResponse () {
+  protected async _getIldcpResponse () {
+    if (!this.oldPlugin.isConnected()) {
+      await this.oldPlugin.connect()
+    }
     const info = this.oldPlugin.getInfo()
     const clientName = this.oldPlugin.getAccount()
 
     const writer = new Writer()
     writer.writeVarOctetString(Buffer.from(clientName, 'ascii'))
-    writer.writeUInt8(info.currencyScale || 9)
-    writer.writeVarOctetString(Buffer.from(info.currency || '', 'utf8'))
+    writer.writeUInt8(typeof info.currencyScale === 'number' ? info.currencyScale : 9)
+    writer.writeVarOctetString(Buffer.from(info.currencyCode || '', 'utf8'))
     const ildcpResponse = writer.getBuffer()
 
     return IlpPacket.serializeIlpFulfill({
